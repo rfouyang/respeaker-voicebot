@@ -149,3 +149,41 @@ class WakeWordConfig:
     # WakeNet has detection latency, so the first syllables after the wake word
     # would be lost without a pre-roll. The firmware keeps the same amount.
     PRE_ROLL_MS = 300
+
+
+class DialogConfig:
+    """Turn taking and barge-in.
+
+    The barge-in numbers are carried over from services/robot-concierge, where
+    they were tuned against this same XVF3800. Its AEC leaves a little of the
+    reply in the processed channel, and these thresholds are what separates
+    that residue from a real interruption.
+    """
+
+    HISTORY_MESSAGES = 12
+    # Silence after which the session gives up and goes back to waiting for
+    # the wake word.
+    IDLE_TIMEOUT_SECONDS = 10
+    MAX_UTTERANCE_SECONDS = 30
+
+    # The reply is handed to TTS one sentence at a time, because the
+    # unidirectional API takes a whole request per piece of text. Sentence
+    # boundaries are the right unit: smaller pieces mean more round trips and
+    # broken prosody, larger ones delay the first audio.
+    SENTENCE_END = "[。！？!?；;\n]"
+    MAX_SENTENCE_CHARS = 60
+
+    # Converts delivered audio back into "how much text the user actually
+    # heard". An estimate: BytePlus unidirectional TTS gives no per-sentence
+    # audio offsets, so this is the best available. See Turn.spoken_text.
+    CHARS_PER_SECOND = 5.0
+    INTERRUPT_NOTE = "（被用户打断，未说完）"
+
+    # A partial transcript this short is noise, not an interruption.
+    BARGE_IN_MIN_CHARS = 1
+    # Below this length an echo comparison is meaningless, so do not attempt it.
+    BARGE_IN_ECHO_MIN_CHARS = 3
+    # How close a partial has to be to what we are currently saying before it
+    # is treated as our own voice leaking back rather than the user talking.
+    BARGE_IN_ECHO_SIMILARITY = 0.72
+    THREAD_STOP_SECONDS = 5
