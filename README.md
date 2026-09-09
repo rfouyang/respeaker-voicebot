@@ -60,7 +60,7 @@ uv run python -m util.llm_helper       # 或按模块跑
 
 - [x] `config/settings.py`
 - [x] `util/llm_helper.py` — DeepSeek 对话 + 记忆 + 打断丢弃
-- [ ] `util/tts_helper.py`
+- [x] `util/tts_helper.py` — BytePlus Seed TTS 流式合成（首包实测 313ms）
 - [ ] `util/asr_helper.py`
 - [ ] 设备传输层（XIAO ↔ 电脑）
 - [ ] `component/` 状态机

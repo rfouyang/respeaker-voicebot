@@ -54,3 +54,35 @@ class LLMConfig:
     PROMPT_PATH = BASE_DIR / "config" / "prompt" / "voicebot_system.md"
     MEMORY_TURNS = 10
     TIMEOUT_SECONDS = 60
+
+
+class BytePlusConfig:
+    """BytePlus Seed Speech -- ASR and TTS.
+
+    Single-key auth (`x-api-key`), ap-southeast-1. These endpoints and resource
+    ids are the ones proven working in services/robot-concierge, not guesses.
+    """
+
+    API_KEY_ENV = "BYTEPLUS_API_KEY"
+    REGION = "ap-southeast-1"
+
+    ASR_URL = f"wss://voice.{REGION}.bytepluses.com/api/v3/sauc/bigmodel_async"
+    ASR_RESOURCE_ID = "volc.seedasr.sauc.duration"
+
+    # Unidirectional streaming: one HTTP request per piece of text, audio
+    # streamed back as base64 JSON lines. It does NOT accept incremental text,
+    # so a long reply is split at sentence boundaries by the caller.
+    TTS_URL = f"https://voice.{REGION}.bytepluses.com/api/v3/tts/unidirectional"
+    TTS_RESOURCE_ID = "seed-tts-2.0"
+    SPEAKER = "zh_female_yingyujiaoxue_uranus_bigtts"
+    # Ask for raw 16k PCM, not mp3 -- the XIAO should not spend cycles decoding
+    # while it is also running WakeNet.
+    TTS_FORMAT = "pcm"
+    TTS_TIMEOUT_SECONDS = 60
+
+    # First audio must arrive fast enough that the reply feels immediate.
+    TTS_FIRST_CHUNK_GOOD_MS = 500
+
+
+class OutputConfig:
+    OUTPUT_DIR = BASE_DIR / "output"
