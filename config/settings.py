@@ -96,3 +96,32 @@ class BytePlusConfig:
 
 class OutputConfig:
     OUTPUT_DIR = BASE_DIR / "output"
+
+
+class DeviceConfig:
+    """The USB CDC link to the XIAO, and the audio format on it.
+
+    The XIAO reaches the PC over its OWN USB-C port. The XVF3800 keeps its
+    factory I2S firmware and never enumerates as a USB device at all -- it is
+    an I2S slave that neither knows nor cares what the XIAO does with the
+    audio afterwards.
+    """
+
+    PORT = "COM3"
+    # ESP32-S3 native USB CDC is not a real UART, so the baud rate is ignored
+    # by the hardware. pyserial still wants a number.
+    BAUD = 921_600
+    READ_TIMEOUT_SECONDS = 0.1
+
+    # Frames are found in the byte stream by this magic. Serial has no message
+    # boundaries, so without it a single lost byte desynchronises the link
+    # permanently.
+    MAGIC = 0x5AA5
+    # A header that claims more than this is corrupt, not a real frame.
+    MAX_PAYLOAD_BYTES = 4_096
+
+    # One downlink packet. Larger and the device playback ring cannot absorb
+    # it; smaller and the framing overhead starts to show.
+    DOWNLINK_CHUNK_BYTES = 640  # 20 ms at 16 kHz mono 16-bit
+
+    BYTES_PER_MS = AudioConfig.SAMPLE_RATE * 2 // 1_000  # 32
