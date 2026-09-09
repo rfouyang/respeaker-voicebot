@@ -155,10 +155,72 @@ def demo_capture_and_identify() -> None:
     print("能识别出文字的那一路就是处理后的语音通道。")
 
 
+def demo_speak_and_identify() -> None:
+    """Drive the whole check without a human: TTS out of the PC speaker, into
+    the microphone array, back over the link, then ASR on each channel.
+
+    This is the JBL playing the part of a person talking. It is NOT the
+    playback path the product uses -- the reply has to leave through the
+    XVF3800 so its AEC sees the echo reference. Here the point is the
+    opposite: be an external voice the array has to pick up.
+    """
+    import threading
+
+    import numpy as np
+    import sounddevice as sd
+
+    from util.tts_helper import TTSHelper
+
+    # Deliberately inert. This gets played out loud into the room, so it must
+    # not be something another listening device could act on -- no smart-home
+    # commands, no wake words, nothing addressed to an assistant.
+    spoken = "春天的湖面很平静，远处有三只白色的鸟慢慢飞过。"
+    tts = TTSHelper()
+    pcm = tts.synthesize(spoken)
+    samples = np.frombuffer(pcm, dtype=np.int16).astype(np.float32)
+    # Loud enough to carry across the desk, short of clipping. Same reasoning
+    # as VISITOR_SPEAKER_GAIN in services/robot-concierge.
+    samples = np.clip(samples * 1.7, -32768, 32767).astype(np.int16)
+    duration = len(samples) / tts.sample_rate
+
+    probe = DeviceProbeHelper()
+    device_name = sd.query_devices(kind="output")["name"]
+    print(f"从扬声器播放 {duration:.1f} 秒语音（{device_name}），同时采集...")
+    print(f"内容: {spoken}")
+
+    def play() -> None:
+        time.sleep(1.0)  # let capture settle, and bluetooth wake up
+        sd.play(samples, tts.sample_rate)
+        sd.wait()
+
+    player = threading.Thread(target=play, daemon=True)
+    player.start()
+    probe.capture(duration + 2.5)
+    player.join(timeout=5)
+
+    print(f"收到 {probe.frames_seen} 帧 / {probe.seconds:.1f} 秒"
+          f"（丢弃非帧字节 {probe.frame.dropped_bytes}）")
+    print(f"电平: L={probe.rms(bytes(probe.left)):.0f}  "
+          f"R={probe.rms(bytes(probe.right)):.0f}")
+
+    results = probe.identify_speech_channel()
+    for name, info in results.items():
+        print(f"  {name:5s} rms={info['rms']:8.1f}  识别: {info['text'] or '(空)'}")
+        print(f"        -> {info['wav']}")
+
+    winners = [n for n, i in results.items() if i["text"]]
+    if len(winners) == 1:
+        print(f"\n处理后的语音通道 = {winners[0]}")
+    elif len(winners) == 2:
+        print("\n两路都能识别；比较文本质量和电平来决定用哪一路")
+    else:
+        print("\n两路都没识别出来。把音量调大、板子挪近扬声器再试")
+
+
 def main() -> None:
     use_utf8_output()
     demo_deinterleave()
-    demo_capture_and_identify()
+    demo_speak_and_identify()
 
 
 if __name__ == "__main__":
