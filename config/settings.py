@@ -68,6 +68,16 @@ class BytePlusConfig:
 
     ASR_URL = f"wss://voice.{REGION}.bytepluses.com/api/v3/sauc/bigmodel_async"
     ASR_RESOURCE_ID = "volc.seedasr.sauc.duration"
+    ASR_MODEL = "bigmodel"
+    ASR_UID = "respeaker-voicebot"
+    # Audio arrives from the device in small frames; batch them before sending
+    # so the cloud sees packets of a sensible size.
+    ASR_FRAME_MS = 200
+    # How long a recognised utterance may stay open after the last audio.
+    ASR_END_WINDOW_MS = 1_000
+    # The wait between the last audio frame and the final transcript -- the
+    # delay the user actually feels after they stop talking.
+    ASR_TAIL_GOOD_MS = 1_000
 
     # Unidirectional streaming: one HTTP request per piece of text, audio
     # streamed back as base64 JSON lines. It does NOT accept incremental text,

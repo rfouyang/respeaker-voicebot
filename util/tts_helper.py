@@ -109,10 +109,28 @@ def demo_first_chunk_latency() -> None:
     print(f"首包 {first_ms:.0f} ms（目标 <{budget} ms，{verdict}），共 {total} 字节")
 
 
+def demo_play() -> None:
+    """Play the synthesized audio out loud so a human can judge it.
+
+    Debug only. On the real device the reply must go out through the XVF3800
+    so its AEC sees the echo reference; a PC speaker bypasses that entirely.
+    """
+    import numpy as np
+    import sounddevice as sd
+
+    tts = TTSHelper()
+    audio = tts.synthesize(TEXT)
+    samples = np.frombuffer(audio, dtype=np.int16)
+    print(f"播放 {tts.duration_seconds(audio):.2f} 秒 -> {sd.query_devices(kind='output')['name']}")
+    sd.play(samples, tts.sample_rate)
+    sd.wait()
+
+
 def main() -> None:
     use_utf8_output()
     demo_synthesize()
     demo_first_chunk_latency()
+    demo_play()
 
 
 if __name__ == "__main__":
