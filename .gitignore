@@ -24,6 +24,9 @@ model/*
 firmware-xiao/build/
 firmware-xiao/sdkconfig
 firmware-xiao/sdkconfig.old
+# Fetched by the component manager; dependencies.lock IS committed so the
+# exact esp-sr version is reproducible.
+firmware-xiao/managed_components/
 
 # IDE
 .idea/

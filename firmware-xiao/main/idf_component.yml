@@ -1,0 +1,6 @@
+dependencies:
+  idf:
+    version: ">=5.5"
+  # WakeNet lives here. This is the component that forces ESP-IDF rather than
+  # Arduino for the real firmware.
+  espressif/esp-sr: "*"
