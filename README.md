@@ -64,5 +64,16 @@ uv run python -m util.llm_helper       # 或按模块跑
 - [x] `util/asr_helper.py` — BytePlus 流式识别（实测尾延迟 46ms）
 - [x] `util/device_frame_helper.py` — USB CDC 线格式，流式重组 + 重同步
 - [x] `util/device_link_helper.py` — 串口传输 + `FakeDevice`
-- [ ] `component/` 状态机（移植 robot-concierge 的 WakeVoiceBot）
-- [ ] `firmware-xiao/` XIAO 固件（ESP-IDF + WakeNet）
+- [x] `component/dialog_orchestration/turn.py` — 一轮对话 + 取消句柄
+- [x] `component/dialog_orchestration/transcription.py` — 设备音频 → 文本
+- [x] `component/dialog_orchestration/response_generation.py` — 文本 → 回复
+- [x] `component/dialog_orchestration/speech_output.py` — 回复 → 按句合成 → 设备
+- [x] `component/dialog_orchestration/service.py` — 六态状态机
+- [x] `component/voicebot_application.py` — 门面 + 命令行
+- [ ] `firmware-xiao/` XIAO 固件（ESP-IDF + WakeNet `wn9_jarvis_tts`）
+
+主机侧已完成，用假设备可跑通完整一轮和打断：
+
+```bash
+uv run python -m component.voicebot_application --demo
+```
