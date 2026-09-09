@@ -125,3 +125,27 @@ class DeviceConfig:
     DOWNLINK_CHUNK_BYTES = 640  # 20 ms at 16 kHz mono 16-bit
 
     BYTES_PER_MS = AudioConfig.SAMPLE_RATE * 2 // 1_000  # 32
+
+
+class WakeWordConfig:
+    """WakeNet on the XIAO.
+
+    The model is picked in the firmware's menuconfig, not here -- these values
+    only exist so the host can log and display the same thing the device is
+    listening for. Confirm MODEL and PHRASE against the actual menuconfig
+    options before trusting them: the docs do not enumerate every model, and
+    esp-sr has no `wn9_hijarvis`, only `wn9_jarvis_tts`, whose phrase is
+    probably the bare word rather than "Hi Jarvis".
+
+    Espressif notes that wake-word brand names belong to their owners; Jarvis
+    is a Marvel/Disney character, so swap the model before shipping anything
+    public. Swapping is one menuconfig option.
+    """
+
+    MODEL = "wn9_jarvis_tts"
+    KCONFIG = "CONFIG_SR_WN_WN9_JARVIS_TTS"
+    PHRASE = "Jarvis"
+
+    # WakeNet has detection latency, so the first syllables after the wake word
+    # would be lost without a pre-roll. The firmware keeps the same amount.
+    PRE_ROLL_MS = 300
