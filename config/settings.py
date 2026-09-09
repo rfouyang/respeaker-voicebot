@@ -187,3 +187,7 @@ class DialogConfig:
     # is treated as our own voice leaking back rather than the user talking.
     BARGE_IN_ECHO_SIMILARITY = 0.72
     THREAD_STOP_SECONDS = 5
+    # If the link goes quiet for this long, hand the recogniser silence
+    # rather than blocking. A stalled link should end the utterance and
+    # let the session time out, not hang the ASR thread with no clue why.
+    AUDIO_STARVE_SECONDS = 0.5
