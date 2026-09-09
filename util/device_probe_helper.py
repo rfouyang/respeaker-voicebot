@@ -78,17 +78,31 @@ class DeviceProbeHelper:
         chunk_seconds = chunk / 2 / DeviceConfig.PLAYBACK_SAMPLE_RATE
         sender = DeviceFrameHelper()
 
+        # Prime the ring before starting the clock. Beginning at exactly real
+        # time leaves no slack at all, so the very first scheduling hiccup is
+        # already an underrun -- which is heard as a stutter at the start of
+        # every reply.
         offset = 0
-        next_send = time.monotonic()
-        deadline = time.monotonic() + len(pcm) / 2 / DeviceConfig.PLAYBACK_SAMPLE_RATE + tail
+        primed = int(DeviceConfig.PLAYBACK_SAMPLE_RATE * 2 * 0.15)  # 150 ms
+        while offset < min(primed, len(pcm)):
+            part = pcm[offset : offset + chunk]
+            link.write(sender.encode_audio_down(0, part))
+            offset += len(part)
+
+        # Pace against a virtual clock, not against "now". Adding the interval
+        # to the current time each round lets scheduling delays accumulate, and
+        # the device falls further behind with every chunk.
+        started = time.monotonic()
+        sent_chunks = 0
+        deadline = started + len(pcm) / 2 / DeviceConfig.PLAYBACK_SAMPLE_RATE + tail
         try:
             while time.monotonic() < deadline:
                 now = time.monotonic()
-                if offset < len(pcm) and now >= next_send:
+                if offset < len(pcm) and now - started >= sent_chunks * chunk_seconds:
                     part = pcm[offset : offset + chunk]
                     link.write(sender.encode_audio_down(0, part))
                     offset += len(part)
-                    next_send = now + chunk_seconds
+                    sent_chunks += 1
                 data = link.read(max(1, link.in_waiting))
                 if data:
                     for frame in self.frame.feed(data):

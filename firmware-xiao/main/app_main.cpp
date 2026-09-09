@@ -14,6 +14,7 @@
 // which settles both open questions at once, since it also proves the AEC runs
 // at all.
 
+#include <math.h>
 #include <string.h>
 
 #include "driver/i2s_std.h"
@@ -24,6 +25,38 @@
 #include "freertos/task.h"
 
 static const char *TAG = "duplex";
+
+// Hardware loopback: write the received I2S words straight back out, with no
+// USB, no ring buffer and no format conversion of any kind.
+//
+// This exists because too many things were being changed at once. If the
+// speaker sounds clean here, the I2S TX path and the 32-bit format are fine
+// and the noise lives in the host chain. If it is still noisy, the problem is
+// below all of that. Either answer removes half the search space.
+//
+// Speak at the array and you hear yourself.
+constexpr bool kLoopbackTest = false;
+
+// Write digital silence to the speaker, forever.
+//
+// Loopback carried the voice but hissed loudly even while nobody spoke, and
+// the captured microphone data is near zero in silence -- so near-zero input
+// is coming out as loud noise. That points away from the data and at the
+// analog side. If the speaker still hisses with nothing but zeros going out,
+// the fault cannot be anything we send, and the answer is the AIC3104's own
+// gain: Seeed's playback example initialises its DAC volume and line-out
+// levels over I2C first, which this firmware has never done.
+constexpr bool kSilenceTest = true;
+
+// Local tone: generate a clean sine on the device and push it through exactly
+// the same int16 -> (int32 << 16) construction the streamed audio uses, but
+// with no USB and no ring buffer in the way.
+//
+// Loopback already proved the I2S path and the 32-bit format are fine, so the
+// noise is somewhere on the host side. This splits that side in two: clean
+// here means the sample construction is right and the fault is in USB or the
+// ring; noisy here means the construction itself is wrong.
+constexpr bool kToneTest = false;
 
 namespace {
 
@@ -68,6 +101,10 @@ i2s_chan_handle_t g_tx = nullptr;
 // not heard yet, and on a barge-in every one of those milliseconds is a
 // sentence that keeps playing after they have started talking.
 RingbufHandle_t g_playback = nullptr;
+// Non-zero means the host outran the device. Reported so an underrun is a
+// number rather than a noise.
+volatile uint32_t g_dropped_bytes = 0;
+volatile uint32_t g_underruns = 0;
 constexpr size_t kPlaybackBytes = 16000 * 2 * 250 / 1000;  // 250 ms mono int16
 
 void i2s_start() {
@@ -138,9 +175,15 @@ void usb_rx_task(void *) {
 
             const uint8_t *payload = buf + at + sizeof(FrameHeader);
             if (header.type == kMsgAudioDown && header.len > 0) {
-                // Drop rather than block: a full ring means playback is already
-                // as deep as it should get.
-                xRingbufferSend(g_playback, payload, header.len, 0);
+                // Wait briefly rather than dropping. Dropping on a full ring
+                // silently removes audio from the middle of a sentence, and
+                // what comes out is a buzz nobody can trace back to here. A
+                // short block pushes back on the host instead, which is the
+                // behaviour that can actually be observed.
+                if (xRingbufferSend(g_playback, payload, header.len,
+                                    pdMS_TO_TICKS(40)) != pdTRUE) {
+                    g_dropped_bytes += header.len;
+                }
             }
             at += sizeof(FrameHeader) + header.len;
         }
@@ -178,6 +221,37 @@ extern "C" void app_main(void) {
         }
         const size_t frames = got / (2 * sizeof(int32_t));
 
+        if (kSilenceTest) {
+            memset(down, 0, sizeof(down));
+            size_t played = 0;
+            i2s_channel_write(g_tx, down, frames * 2 * sizeof(int32_t), &played,
+                              pdMS_TO_TICKS(50));
+            continue;
+        }
+
+        if (kToneTest) {
+            static float phase = 0.0f;
+            const float step = 2.0f * 3.14159265f * 440.0f / kSampleRate;
+            for (size_t i = 0; i < frames; ++i) {
+                const int16_t sample = (int16_t)(8000.0f * sinf(phase));
+                phase += step;
+                if (phase > 2.0f * 3.14159265f) phase -= 2.0f * 3.14159265f;
+                const int32_t v = (int32_t)sample << 16;
+                down[i * 2] = v;
+                down[i * 2 + 1] = v;
+            }
+            size_t played = 0;
+            i2s_channel_write(g_tx, down, frames * 2 * sizeof(int32_t), &played,
+                              pdMS_TO_TICKS(50));
+            continue;
+        }
+
+        if (kLoopbackTest) {
+            size_t echoed = 0;
+            i2s_channel_write(g_tx, raw, got, &echoed, pdMS_TO_TICKS(50));
+            continue;
+        }
+
         // Uplink: valid data is the top 16 bits of each 32-bit slot.
         for (size_t i = 0; i < frames * 2; ++i) up[i] = (int16_t)(raw[i] >> 16);
         send_frame((const uint8_t *)up, frames * 2 * sizeof(int16_t));
@@ -209,6 +283,7 @@ extern "C" void app_main(void) {
         // interpret, and writing the same signal into it added a broad band of
         // hash on top of otherwise intelligible speech.
         memset(down, 0, sizeof(down));
+        if (held < frames && held > 0) g_underruns++;
         if (held >= frames) {
             for (size_t i = 0; i < frames; ++i) {
                 const int32_t v = (int32_t)pending[i] << 16;
@@ -222,5 +297,11 @@ extern "C" void app_main(void) {
         size_t written = 0;
         i2s_channel_write(g_tx, down, frames * 2 * sizeof(int32_t), &written,
                           pdMS_TO_TICKS(50));
+
+        static uint32_t ticks = 0;
+        if (++ticks % 250 == 0 && (g_underruns || g_dropped_bytes)) {
+            ESP_LOGW(TAG, "playback underruns=%lu dropped=%lu bytes",
+                     g_underruns, g_dropped_bytes);
+        }
     }
 }
