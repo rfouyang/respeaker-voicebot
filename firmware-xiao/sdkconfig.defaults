@@ -1,0 +1,34 @@
+# XIAO ESP32S3: 8 MB flash, 8 MB OPI PSRAM (confirmed by esptool on the real
+# board). PSRAM is not optional here -- WakeNet plus the audio ring buffers do
+# not fit in internal RAM.
+CONFIG_ESPTOOLPY_FLASHSIZE_8MB=y
+CONFIG_SPIRAM=y
+CONFIG_SPIRAM_MODE_OCT=y
+CONFIG_SPIRAM_SPEED_80M=y
+CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=4096
+CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y
+
+CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y
+CONFIG_FREERTOS_HZ=1000
+
+# Log and console over the S3's native USB, which is the same port used for
+# flashing. There is no UART bridge on this board.
+CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
+
+# esp-sr models live in their own partition.
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+
+# Wake word: "Jarvis". Confirmed against esp-sr 2.5.3's Kconfig, where the
+# option is labelled "Jarvis (wn9_jarvis_tts)" -- the phrase is the bare word,
+# there is no "Hi Jarvis" model.
+#
+# Jarvis is WakeNet9 only. If the wake rate disappoints on the XVF3800's
+# single processed channel, switch to a WakeNet10 model (wn10_heynova,
+# wn10_nihaoxiaozhi) -- they generalise better. That is this one line.
+CONFIG_SR_WN_WN9_JARVIS_TTS=y
+
+# No command-word recognition: the XIAO only spots the wake word and the
+# endpoint. Everything after that is decided on the host.
+CONFIG_SR_MN_CHINESE_NONE=y
+CONFIG_SR_MN_ENGLISH_NONE=y

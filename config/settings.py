@@ -132,14 +132,21 @@ class WakeWordConfig:
 
     The model is picked in the firmware's menuconfig, not here -- these values
     only exist so the host can log and display the same thing the device is
-    listening for. Confirm MODEL and PHRASE against the actual menuconfig
-    options before trusting them: the docs do not enumerate every model, and
-    esp-sr has no `wn9_hijarvis`, only `wn9_jarvis_tts`, whose phrase is
-    probably the bare word rather than "Hi Jarvis".
+    listening for.
+
+    Confirmed against esp-sr 2.5.3's own Kconfig: the option is
+    `SR_WN_WN9_JARVIS_TTS`, labelled "Jarvis (wn9_jarvis_tts)". The phrase is
+    the bare word; there is no "Hi Jarvis" model.
+
+    Jarvis exists only as a WakeNet9 model. If the wake rate disappoints --
+    plausible, since the XVF3800 gives one processed channel rather than the
+    wake-word-tuned second stream a ReSpeaker Lite has -- the first thing to
+    try is a WakeNet10 model such as `wn10_heynova` or `wn10_nihaoxiaozhi`,
+    which generalise better. That is a one-line sdkconfig change.
 
     Espressif notes that wake-word brand names belong to their owners; Jarvis
     is a Marvel/Disney character, so swap the model before shipping anything
-    public. Swapping is one menuconfig option.
+    public.
     """
 
     MODEL = "wn9_jarvis_tts"
