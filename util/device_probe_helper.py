@@ -57,6 +57,50 @@ class DeviceProbeHelper:
             link.close()
         return self.seconds
 
+    def play_and_capture(self, pcm: bytes, tail: float = 2.0) -> float:
+        """Send `pcm` down for the device to play, capturing uplink throughout.
+
+        One port, both directions, so the echo and the audio that caused it are
+        recorded against the same clock. Downlink is paced at real time rather
+        than dumped: the device's playback ring is only 250 ms deep, and
+        flooding it would just drop most of the audio.
+        """
+        import serial
+
+        from util.device_link_helper import DeviceLinkHelper
+
+        # The device plays at 48 kHz even though it records at 16 kHz.
+        pcm = DeviceLinkHelper.to_playback_rate(
+            pcm, self.sample_rate, DeviceConfig.PLAYBACK_SAMPLE_RATE
+        )
+        link = serial.Serial(self.port, self.baud, timeout=0.05)
+        chunk = DeviceConfig.DOWNLINK_CHUNK_BYTES
+        chunk_seconds = chunk / 2 / DeviceConfig.PLAYBACK_SAMPLE_RATE
+        sender = DeviceFrameHelper()
+
+        offset = 0
+        next_send = time.monotonic()
+        deadline = time.monotonic() + len(pcm) / 2 / DeviceConfig.PLAYBACK_SAMPLE_RATE + tail
+        try:
+            while time.monotonic() < deadline:
+                now = time.monotonic()
+                if offset < len(pcm) and now >= next_send:
+                    part = pcm[offset : offset + chunk]
+                    link.write(sender.encode_audio_down(0, part))
+                    offset += len(part)
+                    next_send = now + chunk_seconds
+                data = link.read(max(1, link.in_waiting))
+                if data:
+                    for frame in self.frame.feed(data):
+                        if frame.type == MsgType.AUDIO_UP:
+                            self.frames_seen += 1
+                            self.split(frame.payload)
+                else:
+                    time.sleep(0.002)
+        finally:
+            link.close()
+        return self.seconds
+
     @staticmethod
     def _deinterleave(interleaved: bytes) -> tuple[bytes, bytes]:
         """L,R,L,R... int16 little endian -> two mono buffers.
@@ -91,6 +135,51 @@ class DeviceProbeHelper:
         if not samples:
             return 0.0
         return math.sqrt(sum(s * s for s in samples) / len(samples))
+
+    def describe(self, pcm: bytes) -> dict:
+        """Measurable properties of a recording, for when ASR just says "(空)".
+
+        A failed transcript tells you something is wrong but not what. These
+        three numbers separate the usual causes, and did so in practice:
+
+        * `span_seconds` against what was played -- much shorter means it was
+          played too fast, i.e. a sample-rate mismatch.
+        * `gap_count` -- periodic near-silent runs mean buffer underruns.
+        * `zero_crossing_rate` -- speech sits around 1000-3000 per second.
+          Far above that is high-frequency hash riding on top of the speech,
+          which is what a wrong slot or bit alignment produces.
+        """
+        samples = array.array("h")
+        samples.frombytes(pcm[: len(pcm) // 2 * 2])
+        if not samples:
+            return {"seconds": 0.0, "span_seconds": 0.0, "gap_count": 0,
+                    "zero_crossing_rate": 0.0}
+
+        step = self.sample_rate // 20  # 50 ms
+        envelope = []
+        for start in range(0, len(samples) - step, step):
+            window = samples[start : start + step]
+            envelope.append(math.sqrt(sum(s * s for s in window) / len(window)))
+        loud = [i for i, level in enumerate(envelope) if level > 300]
+
+        gaps, run = 0, 0
+        for sample in samples:
+            if abs(sample) < 20:
+                run += 1
+            else:
+                if run >= self.sample_rate // 1000:  # >= 1 ms
+                    gaps += 1
+                run = 0
+
+        crossings = sum(
+            1 for i in range(1, len(samples)) if (samples[i - 1] < 0) != (samples[i] < 0)
+        )
+        return {
+            "seconds": len(samples) / self.sample_rate,
+            "span_seconds": (loud[-1] - loud[0]) * 0.05 if loud else 0.0,
+            "gap_count": gaps,
+            "zero_crossing_rate": crossings / (len(samples) / self.sample_rate),
+        }
 
     def write_wav(self, name: str, pcm: bytes) -> Path:
         self.out_dir.mkdir(parents=True, exist_ok=True)

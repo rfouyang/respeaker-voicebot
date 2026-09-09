@@ -131,6 +131,30 @@ class DeviceLinkHelper:
     def send_control(self, ctrl: Ctrl, turn_id: int) -> None:
         self.transport.write(self.frame.encode_control(ctrl, turn_id))
 
+    @staticmethod
+    def to_playback_rate(pcm: bytes, source_rate: int, target_rate: int) -> bytes:
+        """Resample mono int16 for the device's playback path.
+
+        The XVF3800 reads back at 16 kHz but plays at 48 kHz -- measured, see
+        DeviceConfig.PLAYBACK_SAMPLE_RATE. Sending 16 kHz straight through
+        comes out exactly three times too fast.
+
+        Linear interpolation rather than audioop.ratecv: audioop is deprecated
+        and gone in 3.13, and at a whole-number ratio this is equivalent.
+        """
+        if source_rate == target_rate or not pcm:
+            return pcm
+        import numpy as np
+
+        samples = np.frombuffer(pcm, dtype=np.int16)
+        count = int(len(samples) * target_rate / source_rate)
+        resampled = np.interp(
+            np.linspace(0, len(samples) - 1, count),
+            np.arange(len(samples)),
+            samples.astype(np.float32),
+        )
+        return resampled.astype(np.int16).tobytes()
+
     def send_audio_down(self, turn_id: int, pcm: bytes) -> int:
         """Split a reply into device-sized packets. Returns bytes sent.
 
@@ -138,6 +162,9 @@ class DeviceLinkHelper:
         ring stays shallow, so that when the user barges in there is little
         audio already committed that they have not heard yet.
         """
+        pcm = self.to_playback_rate(
+            pcm, AudioConfig.SAMPLE_RATE, DeviceConfig.PLAYBACK_SAMPLE_RATE
+        )
         for offset in range(0, len(pcm), self.chunk_bytes):
             chunk = pcm[offset : offset + self.chunk_bytes]
             self.transport.write(self.frame.encode_audio_down(turn_id, chunk))
@@ -266,15 +293,18 @@ def demo_audio_down() -> None:
     thread = threading.Thread(target=device.run, daemon=True)
     thread.start()
 
-    reply = bytes(DeviceConfig.BYTES_PER_MS * 500)  # 500 ms
-    host.send_audio_down(1, reply)
+    reply = bytes(DeviceConfig.BYTES_PER_MS * 500)  # 500 ms at 16 kHz
+    sent = host.send_audio_down(1, reply)
     host.send_control(Ctrl.TTS_END, 1)
     time.sleep(0.3)
     device_link.stop()
 
-    print(f"下行送达 {device.received_audio_bytes} 字节，"
-          f"分 {len(reply) // DeviceConfig.DOWNLINK_CHUNK_BYTES} 个包")
-    assert device.received_audio_bytes == len(reply)
+    # send_audio_down resamples to the device's 48 kHz playback rate, so what
+    # arrives is three times what was handed in. That ratio IS the check.
+    print(f"送入 {len(reply)} 字节 @16k -> 送达 {device.received_audio_bytes} 字节 @48k "
+          f"(x{device.received_audio_bytes / len(reply):.1f})")
+    assert device.received_audio_bytes == sent
+    assert sent == len(reply) * 3, sent
     assert (Ctrl.TTS_END, 1) in device.received_control
 
 
@@ -294,13 +324,13 @@ def demo_barge_in_drops_stale_audio() -> None:
     host.send_audio_down(1, bytes(DeviceConfig.BYTES_PER_MS * 200))
     time.sleep(0.15)
     new_turn = device.interrupt()
-    host.send_audio_down(1, bytes(DeviceConfig.BYTES_PER_MS * 300))  # late, turn 1
+    late = host.send_audio_down(1, bytes(DeviceConfig.BYTES_PER_MS * 300))  # turn 1
     time.sleep(0.3)
     device_link.stop()
 
     print(f"打断后 turn {new_turn}；丢弃迟到音频 {device.dropped_stale_bytes} 字节")
     assert new_turn == 2
-    assert device.dropped_stale_bytes == DeviceConfig.BYTES_PER_MS * 300
+    assert device.dropped_stale_bytes == late
 
 
 def demo_list_serial_ports() -> None:

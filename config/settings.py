@@ -51,7 +51,9 @@ class LLMConfig:
     API_KEY_ENV = "DEEPSEEK_API_KEY"
     BASE_URL = "https://api.deepseek.com"
     MODEL = "deepseek-v4-flash"
-    PROMPT_PATH = BASE_DIR / "config" / "prompt" / "voicebot_system.md"
+    # Swap this to change what the bot is. wayfinding_stadium.md turns it
+    # into a Stadium MRT (CC6) wayfinding assistant.
+    PROMPT_PATH = BASE_DIR / "config" / "prompt" / "wayfinding_stadium.md"
     MEMORY_TURNS = 10
     TIMEOUT_SECONDS = 60
 
@@ -119,6 +121,25 @@ class DeviceConfig:
     MAGIC = 0x5AA5
     # A header that claims more than this is corrupt, not a real frame.
     MAX_PAYLOAD_BYTES = 4_096
+
+    # Playback rate: UNRESOLVED, currently left equal to the capture rate.
+    #
+    # What is measured so far: sending 16 kHz over a 16 kHz bus yields speech a
+    # listener can follow but that sounds wrong, and a 1 kHz tone returns at
+    # ~3 kHz. Two attempted fixes both made it worse, and both are recorded
+    # here so they are not tried again:
+    #
+    #   * Upsample to 48 kHz on the host, bus left at 16 kHz -- the device then
+    #     receives three samples per one it can play, the ring overflows, two
+    #     thirds are dropped, and it buzzes. Tell-tale: halving the volume did
+    #     not lower the captured level.
+    #   * Run the whole bus at 48 kHz -- this kills the uplink outright
+    #     (zero-crossing rate 19/s, no signal), so the XVF3800's I2S really is
+    #     16 kHz. Still buzzed.
+    #
+    # Next step is to read the chip's Audio Manager settings over I2C instead
+    # of inferring them from symptoms.
+    PLAYBACK_SAMPLE_RATE = AudioConfig.SAMPLE_RATE
 
     # One downlink packet. Larger and the device playback ring cannot absorb
     # it; smaller and the framing overhead starts to show.

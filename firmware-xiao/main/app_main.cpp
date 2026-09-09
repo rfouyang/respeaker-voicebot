@@ -1,18 +1,18 @@
-// Step 2 of bring-up: stream both I2S channels to the host over USB CDC.
+// Step 3 of bring-up: full duplex, so the AEC can be tested.
 //
-// The XVF3800 puts something different in each of the two 32-bit slots -- the
-// levels move independently, so it is not one signal duplicated. Which slot
-// carries the processed speech decides what WakeNet and the cloud recogniser
-// get fed, and guessing wrong costs wake rate and accuracy. So: send both up,
-// let the host run each through ASR, and believe whichever transcribes.
+// Uplink is unchanged -- both I2S slots, interleaved, to the host. What is new
+// is downlink: AUDIO_DOWN frames from the host are written to I2S TX, which
+// goes to the XVF3800 and out of its 3.5 mm jack.
 //
-// Frames share the USB endpoint with the log output. That is deliberate --
-// the host decoder finds frames by magic and skips anything else, so this
-// doubles as a live test of the resync path.
+// That routing is the whole point. The XVF3800 takes its AEC reference from
+// what we send it over I2S, so the reply has to leave through the chip. Wire a
+// speaker straight to the XIAO instead and the chip never sees the reference,
+// the echo is never cancelled, and barge-in becomes impossible.
 //
-// Pins and role are Seeed's, from their XVF3800 + XIAO example. The
-// ReSpeaker Lite code this project started from has DOUT/DIN swapped and uses
-// slave mode; both are wrong here.
+// The test this enables: play a long sentence out of the jack and watch both
+// uplink channels. The one where the echo is gone is the processed output --
+// which settles both open questions at once, since it also proves the AEC runs
+// at all.
 
 #include <string.h>
 
@@ -20,23 +20,36 @@
 #include "driver/usb_serial_jtag.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
+#include "freertos/ringbuf.h"
 #include "freertos/task.h"
 
-static const char *TAG = "stream";
+static const char *TAG = "duplex";
 
 namespace {
 
 constexpr gpio_num_t kPinBclk = GPIO_NUM_8;
 constexpr gpio_num_t kPinWs   = GPIO_NUM_7;
-constexpr gpio_num_t kPinDout = GPIO_NUM_44;  // XIAO -> XVF3800 (playback)
-constexpr gpio_num_t kPinDin  = GPIO_NUM_43;  // XIAO <- XVF3800 (processed mic)
+constexpr gpio_num_t kPinDout = GPIO_NUM_44;  // XIAO -> XVF3800 (and its AEC reference)
+constexpr gpio_num_t kPinDin  = GPIO_NUM_43;  // XIAO <- XVF3800
 
+// The bus runs at 16 kHz. Measured, the hard way.
+//
+// Running it at 48 kHz to match the playback path killed the uplink outright
+// -- zero-crossing rate fell to 19/s, i.e. no signal -- so the XVF3800's I2S
+// really is 16 kHz and its microphone output only comes out cleanly at that
+// clock.
+//
+// The downlink is still wrong: a 1 kHz tone sent at 16 kHz comes back from the
+// speaker at ~3 kHz. That is NOT explained yet, and guessing has cost enough;
+// the next step is to read the chip's Audio Manager configuration over I2C
+// rather than infer it from symptoms.
 constexpr int    kSampleRate = 16000;
-constexpr size_t kFrames     = 320;  // 20 ms
+constexpr size_t kFrames     = 320;  // 20 ms at 16 kHz
 
-// Wire format, byte-for-byte with util/device_frame_helper.py.
-constexpr uint16_t kMagic      = 0x5AA5;
-constexpr uint8_t  kMsgAudioUp = 1;
+constexpr uint16_t kMagic        = 0x5AA5;
+constexpr uint8_t  kMsgAudioUp   = 1;
+constexpr uint8_t  kMsgAudioDown = 2;
+constexpr uint8_t  kMsgControl   = 3;
 
 struct __attribute__((packed)) FrameHeader {
     uint16_t magic;
@@ -50,15 +63,30 @@ static_assert(sizeof(FrameHeader) == 12, "FrameHeader must be 12 bytes");
 i2s_chan_handle_t g_rx = nullptr;
 i2s_chan_handle_t g_tx = nullptr;
 
+// Playback held here between the USB task and the I2S loop. Deliberately
+// shallow: a deep buffer means audio already committed that the listener has
+// not heard yet, and on a barge-in every one of those milliseconds is a
+// sentence that keeps playing after they have started talking.
+RingbufHandle_t g_playback = nullptr;
+constexpr size_t kPlaybackBytes = 16000 * 2 * 250 / 1000;  // 250 ms mono int16
+
 void i2s_start() {
     i2s_chan_config_t chan_cfg = I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_0, I2S_ROLE_MASTER);
     chan_cfg.dma_desc_num  = 6;
     chan_cfg.dma_frame_num = kFrames;
-    chan_cfg.auto_clear    = true;
+    chan_cfg.auto_clear    = true;  // send silence on underrun, not stale audio
     ESP_ERROR_CHECK(i2s_new_channel(&chan_cfg, &g_tx, &g_rx));
 
     i2s_std_config_t std_cfg = {
         .clk_cfg  = I2S_STD_CLK_DEFAULT_CONFIG(kSampleRate),
+        // 32-bit slots. The capture side needs them: at 16-bit the uplink
+        // collapsed to 68 zero-crossings per second and the channels swapped,
+        // which is what frame misalignment looks like.
+        //
+        // The playback side wants 16-bit -- Seeed's two examples genuinely
+        // disagree, because each of them only runs one direction. One bus
+        // cannot be both, so the AIC3104 has to be told over I2C to accept
+        // 32-bit words instead. That is the open item.
         .slot_cfg = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(I2S_DATA_BIT_WIDTH_32BIT,
                                                         I2S_SLOT_MODE_STEREO),
         .gpio_cfg = {
@@ -76,12 +104,52 @@ void i2s_start() {
     ESP_ERROR_CHECK(i2s_channel_enable(g_tx));
 }
 
-// Send one frame, blocking until the host drains it. A short timeout would
-// silently drop audio and show up later as gaps nobody can explain.
 void send_frame(const uint8_t *payload, size_t len) {
     FrameHeader header = {kMagic, kMsgAudioUp, 0, 0, (uint32_t)len};
     usb_serial_jtag_write_bytes(&header, sizeof(header), portMAX_DELAY);
     usb_serial_jtag_write_bytes(payload, len, portMAX_DELAY);
+}
+
+// Read the host's byte stream and pull frames out of it. Same magic-first
+// resync as the Python side: serial has no message boundaries, and starting
+// mid-stream must not break the link permanently.
+void usb_rx_task(void *) {
+    static uint8_t chunk[512];
+    static uint8_t buf[2048];
+    size_t used = 0;
+
+    while (true) {
+        const int got = usb_serial_jtag_read_bytes(chunk, sizeof(chunk), pdMS_TO_TICKS(50));
+        if (got <= 0) continue;
+        const size_t room = sizeof(buf) - used;
+        const size_t take = (size_t)got < room ? (size_t)got : room;
+        memcpy(buf + used, chunk, take);
+        used += take;
+
+        size_t at = 0;
+        while (used - at >= sizeof(FrameHeader)) {
+            FrameHeader header;
+            memcpy(&header, buf + at, sizeof(header));
+            if (header.magic != kMagic || header.len > 4096) {
+                at++;  // not a header; step one byte and keep hunting
+                continue;
+            }
+            if (used - at < sizeof(FrameHeader) + header.len) break;  // still arriving
+
+            const uint8_t *payload = buf + at + sizeof(FrameHeader);
+            if (header.type == kMsgAudioDown && header.len > 0) {
+                // Drop rather than block: a full ring means playback is already
+                // as deep as it should get.
+                xRingbufferSend(g_playback, payload, header.len, 0);
+            }
+            at += sizeof(FrameHeader) + header.len;
+        }
+        if (at > 0) {
+            memmove(buf, buf + at, used - at);
+            used -= at;
+        }
+        if (used == sizeof(buf)) used = 0;  // no frame in a full buffer: resync
+    }
 }
 
 }  // namespace
@@ -89,14 +157,19 @@ void send_frame(const uint8_t *payload, size_t len) {
 extern "C" void app_main(void) {
     usb_serial_jtag_driver_config_t usb_cfg = USB_SERIAL_JTAG_DRIVER_CONFIG_DEFAULT();
     usb_cfg.tx_buffer_size = 4096;
-    usb_cfg.rx_buffer_size = 1024;
+    usb_cfg.rx_buffer_size = 2048;
     ESP_ERROR_CHECK(usb_serial_jtag_driver_install(&usb_cfg));
 
-    ESP_LOGI(TAG, "streaming stereo int16 @%d Hz, both channels interleaved", kSampleRate);
+    g_playback = xRingbufferCreate(kPlaybackBytes, RINGBUF_TYPE_BYTEBUF);
+    ESP_ERROR_CHECK(g_playback ? ESP_OK : ESP_ERR_NO_MEM);
+
+    ESP_LOGI(TAG, "full duplex @%d Hz; playback goes out through the XVF3800", kSampleRate);
     i2s_start();
+    xTaskCreate(usb_rx_task, "usb_rx", 4096, nullptr, 5, nullptr);
 
     static int32_t raw[kFrames * 2];
-    static int16_t out[kFrames * 2];  // interleaved L,R
+    static int16_t up[kFrames * 2];
+    static int32_t down[kFrames * 2];
 
     while (true) {
         size_t got = 0;
@@ -104,10 +177,50 @@ extern "C" void app_main(void) {
             continue;
         }
         const size_t frames = got / (2 * sizeof(int32_t));
-        // Valid data is the top 16 bits of each 32-bit slot.
-        for (size_t i = 0; i < frames * 2; ++i) {
-            out[i] = (int16_t)(raw[i] >> 16);
+
+        // Uplink: valid data is the top 16 bits of each 32-bit slot.
+        for (size_t i = 0; i < frames * 2; ++i) up[i] = (int16_t)(raw[i] >> 16);
+        send_frame((const uint8_t *)up, frames * 2 * sizeof(int16_t));
+
+        // Downlink: gather a WHOLE frame before playing any of it.
+        //
+        // xRingbufferReceiveUpTo routinely returns less than asked -- always so
+        // when the data straddles the ring's wrap point. Zero-filling the
+        // remainder puts a gap of silence inside every 20 ms block, which comes
+        // out of the speaker as a buzz rather than as speech. So accumulate,
+        // and if a full frame is not there yet, send clean silence instead of a
+        // half-filled one.
+        static int16_t pending[kFrames];
+        static size_t held = 0;
+
+        while (held < kFrames) {
+            size_t have = 0;
+            auto *part = (int16_t *)xRingbufferReceiveUpTo(
+                g_playback, &have, 0, (kFrames - held) * sizeof(int16_t));
+            if (!part) break;
+            const size_t n = have / sizeof(int16_t);
+            memcpy(pending + held, part, n * sizeof(int16_t));
+            held += n;
+            vRingbufferReturnItem(g_playback, part);
         }
-        send_frame((const uint8_t *)out, frames * 2 * sizeof(int16_t));
+
+        // Left slot only. XMOS is explicit that the far-end AEC reference goes
+        // on the left (0) channel of the I2S input; the right slot is theirs to
+        // interpret, and writing the same signal into it added a broad band of
+        // hash on top of otherwise intelligible speech.
+        memset(down, 0, sizeof(down));
+        if (held >= frames) {
+            for (size_t i = 0; i < frames; ++i) {
+                const int32_t v = (int32_t)pending[i] << 16;
+                down[i * 2] = v;
+                down[i * 2 + 1] = v;
+            }
+            held -= frames;
+            if (held) memmove(pending, pending + frames, held * sizeof(int16_t));
+        }
+
+        size_t written = 0;
+        i2s_channel_write(g_tx, down, frames * 2 * sizeof(int32_t), &written,
+                          pdMS_TO_TICKS(50));
     }
 }
