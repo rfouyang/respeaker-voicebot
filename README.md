@@ -61,7 +61,8 @@ uv run python -m util.llm_helper       # 或按模块跑
 - [x] `config/settings.py`
 - [x] `util/llm_helper.py` — DeepSeek 对话 + 记忆 + 打断丢弃
 - [x] `util/tts_helper.py` — BytePlus Seed TTS 流式合成（首包实测 313ms）
-- [ ] `util/asr_helper.py`
-- [ ] 设备传输层（XIAO ↔ 电脑）
-- [ ] `component/` 状态机
-- [ ] `firmware-xiao/` XVF3800 固件
+- [x] `util/asr_helper.py` — BytePlus 流式识别（实测尾延迟 46ms）
+- [x] `util/device_frame_helper.py` — USB CDC 线格式，流式重组 + 重同步
+- [x] `util/device_link_helper.py` — 串口传输 + `FakeDevice`
+- [ ] `component/` 状态机（移植 robot-concierge 的 WakeVoiceBot）
+- [ ] `firmware-xiao/` XIAO 固件（ESP-IDF + WakeNet）
