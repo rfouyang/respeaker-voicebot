@@ -1,0 +1,29 @@
+# Secrets — holds live BytePlus / DeepSeek keys.
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+
+# uv
+.uv/
+
+# Generated audio and scratch output
+output/
+debug/
+*.wav
+*.pcm
+
+# Downloaded models
+model/*
+!model/.gitkeep
+
+# ESP-IDF firmware build output
+firmware-xiao/build/
+firmware-xiao/sdkconfig
+firmware-xiao/sdkconfig.old
+
+# IDE
+.idea/
